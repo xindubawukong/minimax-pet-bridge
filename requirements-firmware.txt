@@ -1,0 +1,2 @@
+# Optional: backup, inspect, or restore firmware; not needed for normal sync.
+esptool==5.5.0

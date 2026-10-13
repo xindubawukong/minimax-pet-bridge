@@ -1,0 +1,29 @@
+{
+  "file": "original-flash-2026-10-13.bin",
+  "size_bytes": 16777216,
+  "sha256": "efd0e6b663ad80853622d849f3ab7e6ab6fd298f83a0eb4c427b4cff06580a12",
+  "image_type": "unmodified full flash readback, including NVS",
+  "flash_offset": "0x0",
+  "captured_on": "2026-10-13",
+  "source": "MiniMax SOSP octopus gift device",
+  "board": "Waveshare ESP32-S3-Touch-LCD-4.3C-BOX",
+  "sku": "33630",
+  "chip": "ESP32-S3",
+  "observed_chip_revision": "0.2",
+  "flash_size_bytes": 16777216,
+  "psram_size_bytes": 8388608,
+  "display": {"width": 800, "height": 480},
+  "firmware_log_identifier": "sosp-v11",
+  "usb_protocol": "SOSP9 / SYNC9",
+  "timezone": "Asia/Shanghai",
+  "capture_tool": "esptool 5.5.0, read-flash 0 ALL",
+  "restore_tested": false,
+  "cross_device_flash_tested": false,
+  "partitions": [
+    {"label": "nvs", "offset": "0x9000", "size": "0x5000", "type": 1, "subtype": 2},
+    {"label": "otadata", "offset": "0xe000", "size": "0x2000", "type": 1, "subtype": 0},
+    {"label": "app0", "offset": "0x10000", "size": "0xd00000", "type": 0, "subtype": 0},
+    {"label": "spiffs", "offset": "0xd10000", "size": "0x2e0000", "type": 1, "subtype": 130},
+    {"label": "coredump", "offset": "0xff0000", "size": "0x10000", "type": 1, "subtype": 3}
+  ]
+}
