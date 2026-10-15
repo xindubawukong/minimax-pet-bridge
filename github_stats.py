@@ -113,7 +113,11 @@ class GithubReader:
             if len({f["filename"] for f in detail["files"]}) != len(detail["files"]):
                 raise ValueError("Duplicate files returned by GitHub pagination")
             directory.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(detail, ensure_ascii=False))
+            # Ctrl-C may terminate the background fetch while it writes. Only
+            # publish a complete immutable entry, so the next run can reuse it.
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(detail, ensure_ascii=False))
+            temporary.replace(path)
         if detail["sha"] != sha:
             raise ValueError("Cached commit SHA mismatch")
         return {

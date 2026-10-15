@@ -35,7 +35,9 @@
  */
 #define EXAMPLE_LCD_H_RES               (800)  ///< Horizontal resolution in pixels
 #define EXAMPLE_LCD_V_RES               (480)  ///< Vertical resolution in pixels
-#define EXAMPLE_LCD_PIXEL_CLOCK_HZ      (16 * 1000 * 1000) ///< Pixel clock frequency in Hz
+// Leave PSRAM bandwidth for a full page redraw as well as continuous LCD DMA.
+// 12 MHz is about 29 Hz with these porch timings; page data changes at most 5 Hz.
+#define EXAMPLE_LCD_PIXEL_CLOCK_HZ      (12 * 1000 * 1000) ///< Pixel clock frequency in Hz
 
 /**
  * @brief Color and Pixel Configuration

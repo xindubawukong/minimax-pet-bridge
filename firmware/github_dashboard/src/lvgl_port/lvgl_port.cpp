@@ -305,6 +305,9 @@ static void flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t
             for (int y = top; y <= bottom; ++y) {
                 const size_t offset = static_cast<size_t>(y) * LVGL_PORT_H_RES + left;
                 memcpy(other + offset, color_map + offset, width * sizeof(lv_color_t));
+                // A page switch copies 768 KB between PSRAM buffers. Give the
+                // RGB bounce-buffer ISR bandwidth between short row batches.
+                if (width >= 400 && (y - top + 1) % 8 == 0) vTaskDelay(1);
             }
         }
     }

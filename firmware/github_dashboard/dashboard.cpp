@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <sys/time.h>
+#include <math.h>
 #include "src/lvgl_port/lvgl_port.h"
 
 static constexpr int ROWS = 6;
@@ -18,6 +19,27 @@ static bool discarding = false, has_data = false;
 static uint32_t last_sync_ms = 0, last_status_ms = 0;
 static unsigned total_commits = 0, total_repos = 0;
 static time_t data_until = 0;
+static lv_obj_t *github_screen, *cpu_screen, *cpu_chart, *cpu_host_label;
+static lv_obj_t *cpu_value_label, *cpu_cores_label, *cpu_status_label, *cpu_clock_label;
+static lv_obj_t *cpu_axis_labels[6], *cpu_grid[6];
+static lv_obj_t *cpu_time_labels[6];
+static lv_chart_series_t *cpu_series;
+static bool cpu_page = false, cpu_received = false, cpu_online = false;
+static unsigned cpu_count = 192;
+static uint32_t cpu_sync_ms = 0, cpu_last_sample = 0;
+static unsigned page_switches = 0;
+static uint32_t cpu_end = 0;
+static constexpr int CPU_POINTS = 60;
+static int32_t cpu_values[CPU_POINTS];
+
+static void select_page(bool cpu) {
+    if (cpu_page == cpu) return;
+    cpu_page = cpu;
+    ++page_switches;
+    lv_scr_load(cpu ? cpu_screen : github_screen);
+}
+
+static void tap_page(lv_event_t *event) { select_page(!cpu_page); }
 
 static void set_text(lv_obj_t *obj, const char *text) {
     // LVGL 8 invalidates a label even when set_text receives identical content.
@@ -65,7 +87,63 @@ static void column(int x, const char *title, const char *subtitle,
     }
 }
 
+static void tap_target(lv_obj_t *screen) {
+    // Last child receives taps anywhere, including over chart and card widgets.
+    lv_obj_t *target = lv_obj_create(screen);
+    lv_obj_set_pos(target, 0, 0); lv_obj_set_size(target, 800, 480);
+    lv_obj_set_style_bg_opa(target, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(target, 0, 0);
+    lv_obj_set_style_pad_all(target, 0, 0);
+    lv_obj_clear_flag(target, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_event_cb(target, tap_page, LV_EVENT_CLICKED, nullptr);
+}
+
+static int cpu_y(double percent) {
+    // Explicit visual anchors: one CPU at 25%, eight at 50%, all at 100%.
+    // Below one CPU keep a linear baseline; above it use logarithmic segments.
+    const double cores = percent / 100.0;
+    double height;
+    if (cpu_count <= 1) height = cores;
+    else if (cpu_count <= 8)
+        height = cores <= 1 ? cores * .25 : .25 + .75 * log(cores) / log(cpu_count);
+    else if (cores <= 1) height = cores * .25;
+    else if (cores <= 8) height = .25 + .25 * log(cores) / log(8.0);
+    else height = .5 + .5 * log(cores / 8) / log(cpu_count / 8.0);
+    return (int)lround(1000 * fmin(1.0, fmax(0.0, height)));
+}
+
+static void update_cpu_axis() {
+    const double ticks[] = {0, 100, 800, 3200, 6400, cpu_count * 100.0};
+    for (int i = 0; i < 6; ++i) {
+        bool visible = i == 0 || i == 5 ||
+            (ticks[i] < cpu_count * 100.0 && 1000 - cpu_y(ticks[i]) > 60);
+        if (!visible) {
+            lv_obj_add_flag(cpu_axis_labels[i], LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(cpu_grid[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        lv_obj_clear_flag(cpu_axis_labels[i], LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(cpu_grid[i], LV_OBJ_FLAG_HIDDEN);
+        int y = 394 - (int)lround(cpu_y(ticks[i]) * 220.0 / 1000);
+        char text[24]; snprintf(text, sizeof(text), "%.0f%%", ticks[i]);
+        set_text(cpu_axis_labels[i], text);
+        lv_obj_set_y(cpu_axis_labels[i], y - 7);
+        lv_obj_set_y(cpu_grid[i], y);
+    }
+}
+
+static void update_cpu_times(uint32_t end) {
+    for (int i = 0; i < 6; ++i) {
+        time_t tick = (time_t)end - 300 + i * 60;
+        struct tm local; localtime_r(&tick, &local);
+        char stamp[12]; strftime(stamp, sizeof(stamp), "%H:%M", &local);
+        set_text(cpu_time_labels[i], stamp);
+    }
+}
+
 static void build_ui() {
+    github_screen = lv_scr_act();
+    lv_obj_clear_flag(github_screen, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_set_style_bg_color(lv_scr_act(), lv_color_hex(BG), 0);
     org_label = label(lv_scr_act(), 20, 13, 470, "UCRPARLAY", &lv_font_montserrat_28, FG);
     window_label = label(lv_scr_act(), 22, 50, 630,
@@ -74,8 +152,58 @@ static void build_ui() {
     lv_obj_set_style_text_align(clock_label, LV_TEXT_ALIGN_RIGHT, 0);
     column(16, "Top contributors", "RANKED BY CHANGED LINES", GREEN, contributor_rows);
     column(408, "Top repositories", "RANKED BY CHANGED LINES", BLUE, repo_rows);
-    status_label = label(lv_scr_act(), 22, 450, 756,
+    status_label = label(lv_scr_act(), 22, 441, 756,
         "Connect USB and run run-github.command on your Mac", &lv_font_montserrat_14, MUTED);
+    label(github_screen, 22, 463, 756, "1 / 2   GITHUB LEADERBOARD    /    TAP ANYWHERE FOR DYNAMIC CPU", &lv_font_montserrat_12, MUTED);
+    tap_target(github_screen);
+
+    cpu_screen = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(cpu_screen, lv_color_hex(BG), 0);
+    lv_obj_clear_flag(cpu_screen, LV_OBJ_FLAG_SCROLLABLE);
+    cpu_host_label = label(cpu_screen, 20, 13, 570, "DYNAMIC / CPU", &lv_font_montserrat_28, FG);
+    label(cpu_screen, 22, 50, 650, "LAST 5 MINUTES  /  UPDATE 5s  /  20s MOVING AVERAGE  /  PIECEWISE LOG", &lv_font_montserrat_12, MUTED);
+    cpu_clock_label = label(cpu_screen, 650, 19, 125, "--:--", &lv_font_montserrat_16, GREEN);
+    lv_obj_set_style_text_align(cpu_clock_label, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_t *card = lv_obj_create(cpu_screen);
+    lv_obj_set_pos(card, 16, 86); lv_obj_set_size(card, 768, 350);
+    lv_obj_set_style_bg_color(card, lv_color_hex(CARD), 0);
+    lv_obj_set_style_border_width(card, 0, 0); lv_obj_set_style_radius(card, 14, 0);
+    lv_obj_clear_flag(card, LV_OBJ_FLAG_SCROLLABLE);
+    cpu_value_label = label(cpu_screen, 38, 102, 370, "--%", &lv_font_montserrat_28, GREEN);
+    cpu_cores_label = label(cpu_screen, 38, 140, 670, "Waiting for SSH samples  /  100% = 1 logical CPU", &lv_font_montserrat_14, MUTED);
+    label(cpu_screen, 510, 112, 245, "LATEST 20-SECOND AVERAGE", &lv_font_montserrat_12, MUTED);
+    for (int i = 0; i < 6; ++i) {
+        cpu_axis_labels[i] = label(cpu_screen, 22, 174, 62, "", &lv_font_montserrat_12, MUTED);
+        lv_obj_set_style_text_align(cpu_axis_labels[i], LV_TEXT_ALIGN_RIGHT, 0);
+        cpu_grid[i] = lv_obj_create(cpu_screen);
+        lv_obj_set_size(cpu_grid[i], 664, 1); lv_obj_set_x(cpu_grid[i], 96);
+        lv_obj_set_style_bg_color(cpu_grid[i], lv_color_hex(0x293747), 0);
+        lv_obj_set_style_border_width(cpu_grid[i], 0, 0);
+    }
+    cpu_chart = lv_chart_create(cpu_screen);
+    lv_obj_set_pos(cpu_chart, 96, 174); lv_obj_set_size(cpu_chart, 664, 221);
+    lv_obj_set_style_bg_opa(cpu_chart, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(cpu_chart, 0, 0); lv_obj_set_style_pad_all(cpu_chart, 0, 0);
+    lv_obj_set_style_line_width(cpu_chart, 3, LV_PART_ITEMS);
+    lv_obj_set_style_size(cpu_chart, 4, LV_PART_INDICATOR);
+    lv_chart_set_type(cpu_chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(cpu_chart, CPU_POINTS + 1); // left boundary + 60 rolling means
+    lv_chart_set_range(cpu_chart, LV_CHART_AXIS_PRIMARY_Y, 0, 1000);
+    lv_chart_set_div_line_count(cpu_chart, 0, 0);
+    cpu_series = lv_chart_add_series(cpu_chart, lv_color_hex(GREEN), LV_CHART_AXIS_PRIMARY_Y);
+    lv_chart_set_all_value(cpu_chart, cpu_series, LV_CHART_POINT_NONE);
+    for (int i = 0; i < CPU_POINTS; ++i) cpu_values[i] = -1;
+    update_cpu_axis();
+    for (int i = 0; i < 6; ++i) {
+        int tick_x = 96 + (int)lround(i * 664.0 / 5);
+        int left = i == 0 ? tick_x : i == 5 ? tick_x - 80 : tick_x - 40;
+        cpu_time_labels[i] = label(cpu_screen, left, 408, 80, "--:--", &lv_font_montserrat_12, MUTED);
+        lv_obj_set_style_text_align(cpu_time_labels[i], i == 0 ? LV_TEXT_ALIGN_LEFT :
+            i == 5 ? LV_TEXT_ALIGN_RIGHT : LV_TEXT_ALIGN_CENTER, 0);
+    }
+    cpu_status_label = label(cpu_screen, 22, 441, 756, "SSH dynamic  /  collecting the first complete 20-second average", &lv_font_montserrat_14, MUTED);
+    label(cpu_screen, 22, 463, 756, "2 / 2   DYNAMIC CPU    /    TAP ANYWHERE FOR GITHUB LEADERBOARD", &lv_font_montserrat_12, MUTED);
+    tap_target(cpu_screen);
 }
 
 static void number(uint64_t value, char *out, size_t size) {
@@ -138,17 +266,74 @@ static void show_rows(JsonArrayConst data, DisplayRow *rows) {
 
 static void hello() {
     uint64_t mac = ESP.getEfuseMac();
-    Serial.printf("GHD1 HELLO id=%04x%08x rows=6 width=800 height=480\n",
+    Serial.printf("GHD1 HELLO id=%04x%08x rows=6 width=800 height=480 cpu=2 pages=2\n",
                   (unsigned)(mac >> 32), (unsigned)mac);
+}
+
+static void receive_cpu(JsonDocument &doc, uint32_t expected) {
+    const char *host = doc["host"];
+    JsonArrayConst values = doc["values"].as<JsonArrayConst>();
+    if (!host || !*host || strlen(host) > 100 || !doc["cpus"].is<unsigned>() ||
+        doc["cpus"].as<unsigned>() > 4096 || !doc["online"].is<bool>() ||
+        !doc["generated_at"].is<uint32_t>() || !doc["last_sample"].is<uint32_t>() ||
+        !doc["end"].is<uint32_t>() || doc["end"].as<uint32_t>() % 5 || doc["step"].as<int>() != 5 ||
+        doc["window"].as<int>() != 20 || values.size() != CPU_POINTS) { Serial.println("CPU1 ERROR schema"); return; }
+    unsigned cores = doc["cpus"];
+    for (JsonVariantConst value : values)
+        if (!value.isNull() && (!value.is<uint32_t>() || !cores || value.as<uint32_t>() > cores * 1000)) {
+            Serial.println("CPU1 ERROR range"); return;
+        }
+    if (!lvgl_port_lock(2000)) { Serial.println("CPU1 ERROR display_busy"); return; }
+    bool changed = cpu_end != doc["end"].as<uint32_t>() || (cores && cores != cpu_count);
+    if (cores && cores != cpu_count) { cpu_count = cores; update_cpu_axis(); }
+    for (int i = 0; i < CPU_POINTS; ++i) {
+        int32_t value = values[i].isNull() ? -1 : values[i].as<int32_t>();
+        if (cpu_values[i] != value) changed = true;
+        cpu_values[i] = value;
+    }
+    if (changed) {
+        for (int i = 0; i < CPU_POINTS; ++i)
+            cpu_series->y_points[i + 1] = cpu_values[i] < 0 ? LV_CHART_POINT_NONE : cpu_y(cpu_values[i] / 10.0);
+        lv_chart_refresh(cpu_chart);
+    }
+    char title[130], text[130]; snprintf(title, sizeof(title), "%s / CPU", host);
+    set_text(cpu_host_label, title);
+    if (cpu_values[CPU_POINTS - 1] >= 0) {
+        snprintf(text, sizeof(text), "%.1f%%", cpu_values[CPU_POINTS - 1] / 10.0);
+        set_text(cpu_value_label, text);
+        snprintf(text, sizeof(text), "%.2f / %u logical CPUs  /  100%% = 1 CPU  /  max %u%%",
+                 cpu_values[CPU_POINTS - 1] / 1000.0, cpu_count, cpu_count * 100);
+    } else {
+        set_text(cpu_value_label, "--%");
+        snprintf(text, sizeof(text), "%u logical CPUs  /  100%% = 1 CPU  /  max %u%%", cpu_count, cpu_count * 100);
+    }
+    set_text(cpu_cores_label, text);
+    cpu_end = doc["end"]; cpu_last_sample = doc["last_sample"];
+    update_cpu_times(cpu_end);
+    cpu_online = doc["online"]; cpu_received = true; cpu_sync_ms = millis();
+    struct timeval now = { (time_t)doc["generated_at"].as<uint32_t>(), 0 };
+    settimeofday(&now, nullptr);
+    lvgl_port_unlock();
+    Serial.printf("CPU1 ACK %08lx\n", (unsigned long)expected);
 }
 
 static void process_line(char *line) {
     if (!strcmp(line, "dashboard.hello")) { hello(); return; }
+    if (!strncmp(line, "dashboard.page ", 15)) {
+        const char *page = line + 15;
+        if (strcmp(page, "cpu") && strcmp(page, "github") && strcmp(page, "tap")) return;
+        if (!lvgl_port_lock(2000)) { Serial.println("GHD1 ERROR display_busy"); return; }
+        if (!strcmp(page, "tap")) tap_page(nullptr);
+        else select_page(!strcmp(page, "cpu"));
+        lvgl_port_unlock();
+        Serial.printf("GHD1 PAGE %s\n", cpu_page ? "cpu" : "github");
+        return;
+    }
     if (!strcmp(line, "dashboard.status")) {
         if (!lvgl_port_lock(2000)) { Serial.println("GHD1 ERROR display_busy"); return; }
-        Serial.printf("GHD1 STATUS uptime_ms=%lu frames=%lu pixels=%llu\n",
+        Serial.printf("GHD1 STATUS uptime_ms=%lu frames=%lu pixels=%llu page=%s switches=%u\n",
             (unsigned long)millis(), (unsigned long)lvgl_port_rendered_frames(),
-            (unsigned long long)lvgl_port_rendered_pixels());
+            (unsigned long long)lvgl_port_rendered_pixels(), cpu_page ? "cpu" : "github", page_switches);
         lvgl_port_unlock();
         return;
     }
@@ -170,19 +355,22 @@ static void process_line(char *line) {
         lvgl_port_unlock();
         return;
     }
-    if (strncmp(line, "GHD1 ", 5)) return;
+    bool is_cpu = !strncmp(line, "CPU1 ", 5);
+    const char *protocol = is_cpu ? "CPU1" : "GHD1";
+    if (!is_cpu && strncmp(line, "GHD1 ", 5)) return;
     if (strlen(line) < 16 || line[13] != ' ') {
-        Serial.println("GHD1 ERROR frame"); return;
+        Serial.printf("%s ERROR frame\n", protocol); return;
     }
     for (int i = 5; i < 13; ++i)
-        if (!isxdigit(line[i])) { Serial.println("GHD1 ERROR crc"); return; }
+        if (!isxdigit(line[i])) { Serial.printf("%s ERROR crc\n", protocol); return; }
     uint32_t expected = strtoul(line + 5, nullptr, 16);
     const char *payload = line + 14;
-    if (crc32(payload) != expected) { Serial.println("GHD1 ERROR checksum"); return; }
+    if (crc32(payload) != expected) { Serial.printf("%s ERROR checksum\n", protocol); return; }
     JsonDocument doc;
     if (deserializeJson(doc, payload, DeserializationOption::NestingLimit(5))) {
-        Serial.println("GHD1 ERROR json"); return;
+        Serial.printf("%s ERROR json\n", protocol); return;
     }
+    if (is_cpu) { receive_cpu(doc, expected); return; }
     const char *org = doc["org"];
     if (!org || !*org || strlen(org) > 39 ||
         !doc["since"].is<uint32_t>() || !doc["until"].is<uint32_t>() ||
@@ -247,15 +435,29 @@ void loop() {
     if (millis() - last_status_ms >= 1000 && lvgl_port_lock(20)) {
         last_status_ms = millis();
         if (has_data) {
-            char footer[150], clock[24];
+            char footer[150];
             unsigned minutes = (millis() - last_sync_ms) / 60000;
             bool stale = minutes >= 30 || time(nullptr) - data_until >= 1800;
             snprintf(footer, sizeof(footer), "%u commits  /  %u repos  /  USB synced %um ago%s",
                      total_commits, total_repos, minutes, stale ? "  -  DATA MAY BE STALE" : "");
             set_text(status_label, footer);
-            time_t now = time(nullptr); struct tm tm; localtime_r(&now, &tm);
+        }
+        if (has_data || cpu_received) {
+            char clock[24]; time_t now = time(nullptr); struct tm tm; localtime_r(&now, &tm);
             strftime(clock, sizeof(clock), "%H:%M", &tm);
-            set_text(clock_label, clock);
+            set_text(clock_label, clock); set_text(cpu_clock_label, clock);
+        }
+        if (cpu_received) {
+            bool live = cpu_online && millis() - cpu_sync_ms < 15000;
+            char text[170], stamp[24];
+            time_t end = cpu_end; struct tm tm; localtime_r(&end, &tm);
+            strftime(stamp, sizeof(stamp), "%H:%M:%S", &tm);
+            unsigned points = 0; for (int i = 0; i < CPU_POINTS; ++i) if (cpu_values[i] >= 0) ++points;
+            bool recent = time(nullptr) - cpu_last_sample < 15;
+            snprintf(text, sizeof(text), "%s  /  %u / %u sliding averages  /  through %s%s",
+                     live && recent ? "SSH connected" : "OFFLINE - samples stopped", points, CPU_POINTS, stamp,
+                     points == 0 ? "  /  collecting..." : "  /  gaps = no data");
+            set_text(cpu_status_label, text);
         }
         lvgl_port_unlock();
     }
