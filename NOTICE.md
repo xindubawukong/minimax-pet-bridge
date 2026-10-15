@@ -7,3 +7,5 @@
 - 原始镜像逐字节保留，包括 NVS 和其他数据分区。它是设备快照，不是去除配置后的通用发行镜像；不能把本仓库的校验通过等同于配置或许可审计。
 
 品牌名称仅用于说明兼容的设备和数据来源。
+
+`firmware/github_dashboard/src/` 基于 Waveshare 官方 ESP32-S3-Touch-LCD-4.3C 示例，来源提交 `44e412f08c1e68c0da826bc5f51436f156a02eea`，包含 Espressif 的触摸驱动代码；这些文件采用 Apache License 2.0，副本见 `firmware/github_dashboard/WAVESHARE-LICENSE.txt`。修改过的驱动文件在文件头标注了修改内容。新增榜单 UI、主机统计和桥接代码采用本仓库 MIT 许可。

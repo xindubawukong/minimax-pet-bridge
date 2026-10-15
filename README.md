@@ -1,5 +1,22 @@
 # minimax-pet-bridge
 
+## GitHub 双列榜单（`github-leaderboard` 分支）
+
+这个分支新增可从源码编译的 4.3C-BOX 固件：左侧 **Top contributors**，右侧 **Top repositories**，按最近 7 天的 **新增行数＋删除行数** 降序排列，各显示前 6 名。
+
+刷入榜单固件后，在 Mac 终端运行：
+
+```sh
+./run-github.command
+# 或：.venv/bin/python github_bridge.py
+```
+
+默认使用已登录的 `gh` 读取 `ucrparlay`，每 **30 分钟**更新，随时 **Ctrl-C** 停止。统计覆盖有权限的公开和私有仓库、全部当前分支和标签；按 SHA 去重，排除合并提交的重复行数。所有有文本行数统计的文件都参与，包括 `.tex`、CSV 和 notebook。
+
+构建、烧录、统计口径和恢复说明见 **[GitHub 榜单指南](docs/github-dashboard.md)**。下面保留原来的 Codex 用量同步说明；`run.command` 对应原小章鱼固件。
+
+---
+
 通过 USB 将 Mac 上的本地 Codex token 用量和当前时间同步到 **MiniMax SOSP 小章鱼桌宠**。保留设备原有的画面、动画、触摸切换和每日运势。
 
 本项目的使用方式是 **USB Serial/JTAG 有线同步**，按下方步骤安装并运行即可。
